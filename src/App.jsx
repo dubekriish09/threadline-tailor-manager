@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
+import { createClient } from "@supabase/supabase-js";
 import {
   Activity, ArrowDownRight, ArrowUpRight, Bell, CalendarDays, Check,
   ChevronDown, ChevronRight, CircleHelp, ClipboardList, Clock3, FilePlus2,
@@ -52,9 +53,14 @@ function exportMeasurementsCard(customer) {
   w.document.close();
 }
 
-function App() {
+function Workspace({ user, supabase, onSignOut }) {
   const [customers, setCustomers] = useState(() => readStore("threadline-customers", initialCustomers));
   const [orders, setOrders] = useState(() => readStore("threadline-orders", initialOrders));
+  const [cloudReady, setCloudReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("Connecting…");
+  const [syncError, setSyncError] = useState("");
+  const lastCloudChange = useRef(0);
+  const initialLocal = useRef(null);
   const [page, setPage] = useState("Overview");
   const [search, setSearch] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
@@ -68,8 +74,125 @@ function App() {
   const [newCustomer, setNewCustomer] = useState({ name: "", phone: "", height: "", fit: "Regular", notes: "" });
   const [newOrder, setNewOrder] = useState({ customerId: "", garment: "Shirt", due: "", amount: "", paid: "", notes: "" });
 
-  useEffect(() => localStorage.setItem("threadline-customers", JSON.stringify(customers)), [customers]);
-  useEffect(() => localStorage.setItem("threadline-orders", JSON.stringify(orders)), [orders]);
+
+  useEffect(() => {
+    localStorage.setItem("threadline-customers", JSON.stringify(customers));
+  }, [customers]);
+  useEffect(() => {
+    localStorage.setItem("threadline-orders", JSON.stringify(orders));
+  }, [orders]);
+
+  const pullCloudData = async ({ allowMigration = true } = {}) => {
+    setSyncStatus("Syncing…");
+    setSyncError("");
+    const [customerResult, orderResult] = await Promise.all([
+      supabase.from("customers").select("*").eq("user_id", user.id),
+      supabase.from("orders").select("*").eq("user_id", user.id)
+    ]);
+    if (customerResult.error || orderResult.error) {
+      const error = customerResult.error || orderResult.error;
+      setSyncError(error.message);
+      setSyncStatus("Sync issue");
+      return;
+    }
+    const cloudCustomers = (customerResult.data || []).map(({ user_id, created_at, updated_at_cloud, ...c }) => c);
+    const cloudOrders = (orderResult.data || []).map(({ user_id, created_at, updated_at_cloud, ...o }) => o);
+    const localCustomers = readStore("threadline-customers", []);
+    const localOrders = readStore("threadline-orders", []);
+    if (cloudCustomers.length === 0 && cloudOrders.length === 0 && allowMigration && (localCustomers.length || localOrders.length)) {
+      const migrateCustomers = localCustomers.map(c => ({ ...c, user_id: user.id }));
+      const migrateOrders = localOrders.map(o => ({ ...o, user_id: user.id }));
+      const customerUpload = migrateCustomers.length ? await supabase.from("customers").upsert(migrateCustomers, { onConflict: "user_id,id" }) : { error: null };
+      const orderUpload = !customerUpload.error && migrateOrders.length ? await supabase.from("orders").upsert(migrateOrders, { onConflict: "user_id,id" }) : { error: customerUpload.error };
+      if (customerUpload.error || orderUpload.error) {
+        setSyncError((customerUpload.error || orderUpload.error).message);
+        setSyncStatus("Sync issue");
+        return;
+      }
+      setCustomers(localCustomers);
+      setOrders(localOrders);
+    } else {
+      setCustomers(cloudCustomers);
+      setOrders(cloudOrders);
+    }
+    lastCloudChange.current = Date.now();
+    setCloudReady(true);
+    setSyncStatus("Cloud synced");
+  };
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setSyncStatus("Connecting…");
+      const [customerResult, orderResult] = await Promise.all([
+        supabase.from("customers").select("*").eq("user_id", user.id),
+        supabase.from("orders").select("*").eq("user_id", user.id)
+      ]);
+      if (!alive) return;
+      if (customerResult.error || orderResult.error) {
+        setSyncError((customerResult.error || orderResult.error).message);
+        setSyncStatus("Sync issue");
+        return;
+      }
+      const cloudCustomers = (customerResult.data || []).map(({ user_id, created_at, updated_at_cloud, ...c }) => c);
+      const cloudOrders = (orderResult.data || []).map(({ user_id, created_at, updated_at_cloud, ...o }) => o);
+      const localCustomers = readStore("threadline-customers", []);
+      const localOrders = readStore("threadline-orders", []);
+      if (cloudCustomers.length === 0 && cloudOrders.length === 0 && (localCustomers.length || localOrders.length)) {
+        const customerUpload = localCustomers.length ? await supabase.from("customers").upsert(localCustomers.map(c => ({ ...c, user_id: user.id })), { onConflict: "user_id,id" }) : { error: null };
+        const orderUpload = !customerUpload.error && localOrders.length ? await supabase.from("orders").upsert(localOrders.map(o => ({ ...o, user_id: user.id })), { onConflict: "user_id,id" }) : { error: customerUpload.error };
+        if (!alive) return;
+        if (customerUpload.error || orderUpload.error) {
+          setSyncError((customerUpload.error || orderUpload.error).message);
+          setSyncStatus("Sync issue");
+          return;
+        }
+        setCustomers(localCustomers);
+        setOrders(localOrders);
+      } else {
+        setCustomers(cloudCustomers);
+        setOrders(cloudOrders);
+      }
+      lastCloudChange.current = Date.now();
+      setCloudReady(true);
+      setSyncStatus("Cloud synced");
+    })();
+    return () => { alive = false; };
+  }, [supabase, user.id]);
+
+  useEffect(() => {
+    if (!cloudReady) return;
+    const timer = window.setTimeout(async () => {
+      setSyncStatus("Saving…");
+      setSyncError("");
+      const customerRows = customers.map(c => ({ ...c, user_id: user.id }));
+      const orderRows = orders.map(o => ({ ...o, user_id: user.id }));
+      const customerResult = customerRows.length ? await supabase.from("customers").upsert(customerRows, { onConflict: "user_id,id" }) : { error: null };
+      const orderResult = !customerResult.error && orderRows.length ? await supabase.from("orders").upsert(orderRows, { onConflict: "user_id,id" }) : { error: customerResult.error };
+      if (customerResult.error || orderResult.error) {
+        setSyncError((customerResult.error || orderResult.error).message);
+        setSyncStatus("Sync issue");
+      } else {
+        lastCloudChange.current = Date.now();
+        setSyncStatus("Cloud synced");
+      }
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [customers, orders, cloudReady, supabase, user.id]);
+
+  useEffect(() => {
+    if (!cloudReady) return;
+    const channel = supabase.channel("threadline-cloud-" + user.id)
+      .on("postgres_changes", { event: "*", schema: "public", table: "customers", filter: "user_id=eq." + user.id }, () => {
+        if (Date.now() - lastCloudChange.current < 1200) return;
+        pullCloudData({ allowMigration: false });
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "orders", filter: "user_id=eq." + user.id }, () => {
+        if (Date.now() - lastCloudChange.current < 1200) return;
+        pullCloudData({ allowMigration: false });
+      }).subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [cloudReady, supabase, user.id]);
 
   const selectedCustomer = customers.find(c => c.id === selectedCustomerId) || customers[0];
   useEffect(() => {
@@ -150,7 +273,7 @@ function App() {
         {page === "Orders" && <Orders orders={orders} onAdd={() => setOrderModal(true)} onStatus={changeStatus} />}
         {page === "Settings" && <SettingsPage customers={customers} orders={orders} selectedCustomer={selectedCustomer} onExportCustomers={() => exportCustomers(customers)} onExportOrders={() => exportOrders(orders)} onExportBackup={() => exportBackup(customers, orders)} onImportBackup={async file => { try { const parsed = JSON.parse(await file.text()); if (!parsed || !Array.isArray(parsed.customers) || !Array.isArray(parsed.orders)) throw new Error("Invalid backup structure"); if (!confirm(`Replace current data with ${parsed.customers.length} customers and ${parsed.orders.length} orders? Export a backup first if needed.`)) return; setCustomers(parsed.customers); setOrders(parsed.orders); setSelectedCustomerId(parsed.customers[0]?.id || ""); notify("Backup imported successfully"); } catch { notify("Import failed: choose a valid Threadline JSON backup"); } }} onPrintMeasurements={() => exportMeasurementsCard(selectedCustomer)} />}
       </div>
-      <footer className="footer"><span>© {new Date().getFullYear()} Threadline Studio</span><span><span className="online-dot"/> Saved in this browser · export backups regularly</span></footer>
+      <footer className="footer"><span>© {new Date().getFullYear()} Threadline Studio</span><span className={syncStatus === "Cloud synced" ? "cloud-state" : "cloud-state warning"}><span className="online-dot"/> {syncStatus} · <button className="footer-link" onClick={onSignOut}>Sign out</button></span></footer>
     </main>
     {customerModal && <Modal title="Add new customer" subtitle="Create a profile to store measurements and orders." onClose={() => setCustomerModal(false)}><form onSubmit={addCustomer} className="modal-form"><Field label="Customer name *"><input autoFocus required placeholder="e.g. Rahul Verma" value={newCustomer.name} onChange={e => setNewCustomer({...newCustomer, name:e.target.value})}/></Field><Field label="Phone number *"><input required inputMode="tel" placeholder="e.g. 98765 43210" value={newCustomer.phone} onChange={e => setNewCustomer({...newCustomer, phone:e.target.value})}/></Field><div className="form-grid"><Field label="Height"><input placeholder="e.g. 5 ft 8 in" value={newCustomer.height} onChange={e => setNewCustomer({...newCustomer, height:e.target.value})}/></Field><Field label="Fit preference"><select value={newCustomer.fit} onChange={e => setNewCustomer({...newCustomer, fit:e.target.value})}><option>Regular</option><option>Slim</option><option>Relaxed</option><option>Tailored</option></select></Field></div><Field label="Notes"><textarea rows="3" placeholder="Posture, fitting preferences, alterations…" value={newCustomer.notes} onChange={e => setNewCustomer({...newCustomer, notes:e.target.value})}/></Field><div className="modal-actions"><button type="button" className="btn secondary" onClick={() => setCustomerModal(false)}>Cancel</button><button className="btn primary" type="submit"><Plus size={16}/> Create customer</button></div></form></Modal>}
     {orderModal && <Modal title="Create garment order" subtitle="Add a new stitching job to the work queue." onClose={() => setOrderModal(false)}><form onSubmit={createOrder} className="modal-form"><CustomerSearchSelect customers={customers} value={newOrder.customerId} onChange={customerId => setNewOrder(prev => ({ ...prev, customerId }))} /><Field label="Garment / order description *"><input required placeholder="e.g. 2 shirts, 1 trouser" value={newOrder.garment} onChange={e => setNewOrder({...newOrder, garment:e.target.value})}/></Field><div className="form-grid"><Field label="Delivery date *"><input required type="date" value={newOrder.due} onChange={e => setNewOrder({...newOrder, due:e.target.value})}/></Field><Field label="Total price (₹) *"><input required type="number" min="0" value={newOrder.amount} onChange={e => setNewOrder({...newOrder, amount:e.target.value})} placeholder="0"/></Field></div><Field label="Advance paid (₹)"><input type="number" min="0" value={newOrder.paid} onChange={e => setNewOrder({...newOrder, paid:e.target.value})} placeholder="0"/></Field><Field label="Order notes"><textarea rows="2" value={newOrder.notes} onChange={e => setNewOrder({...newOrder, notes:e.target.value})} placeholder="Fabric, design, special instructions…"/></Field><div className="modal-actions"><button type="button" className="btn secondary" onClick={() => setOrderModal(false)}>Cancel</button><button className="btn primary" type="submit"><Plus size={16}/> Create order</button></div></form></Modal>}
@@ -260,7 +383,7 @@ function SettingsPage({ customers, orders, selectedCustomer, onExportCustomers, 
       <div className="settings-row"><div className="settings-icon"><FilePlus2 size={19}/></div><div><strong>Full backup (JSON)</strong><p>Includes customer profiles, measurements and orders. Keep this file private and store it somewhere secure.</p></div><button className="btn primary small" onClick={onExportBackup}>Download backup</button></div>
       <div className="settings-row"><div className="settings-icon"><Activity size={19}/></div><div><strong>Restore from backup</strong><p>Import a previous Threadline JSON backup. This replaces current data, so export a backup first.</p></div><input ref={importRef} type="file" accept="application/json,.json" hidden onChange={e => { const file = e.target.files?.[0]; if (file) onImportBackup(file); e.target.value = ""; }}/><button className="btn secondary small" onClick={() => importRef.current?.click()}>Import backup</button></div>
       <div className="settings-row"><div className="settings-icon"><Ruler size={19}/></div><div><strong>Print measurement card</strong><p>Choose a customer in Measurements first, then print or save their measurement card as PDF.</p></div><button className="btn secondary small" onClick={onPrintMeasurements} disabled={!selectedCustomer}>Print / PDF</button></div>
-      <div className="settings-row"><div className="settings-icon"><Settings size={19}/></div><div><strong>Storage and multi-device use</strong><p>Current build stores data in this browser. For multi-device production use, connect a cloud database and authentication before entering real customer data. Hosting the static site alone does not sync records between devices.</p></div><span className="local-badge"><span className="online-dot"/> Local mode</span></div>
+      <div className="settings-row"><div className="settings-icon"><Settings size={19}/></div><div><strong>Cloud storage and multi-device sync</strong><p>Customer profiles, measurements and orders sync to your authenticated Supabase account. Keep using exports as an additional backup.</p>{syncError && <p className="sync-error">Sync error: {syncError}</p>}</div><span className="local-badge"><span className="online-dot"/> {syncStatus}</span></div>
     </section></>;
 }
 function Status({ value }) {
@@ -272,5 +395,63 @@ function Modal({title,subtitle,onClose,children}) {
   return <div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)onClose();}}><div className="modal-card"><div className="modal-heading"><div><h2>{title}</h2><p>{subtitle}</p></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div>{children}</div></div>;
 }
 function EmptyState({text}) { return <div className="empty-state"><div className="empty-icon"><ClipboardList size={22}/></div><p>{text}</p></div>; }
+
+
+function App() {
+  const [supabase, setSupabase] = useState(null);
+  const [session, setSession] = useState(null);
+  const [configError, setConfigError] = useState("");
+  const [authLoading, setAuthLoading] = useState(true);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authMessage, setAuthMessage] = useState("");
+
+  useEffect(() => {
+    const url = import.meta.env.VITE_SUPABASE_URL;
+    const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+    if (!url || !key || url.includes("YOUR_PROJECT_REF") || key.includes("YOUR_KEY")) {
+      setConfigError("Supabase environment variables are missing. Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY in your local environment and Cloudflare deployment settings.");
+      setAuthLoading(false);
+      return;
+    }
+    const client = createClient(url, key);
+    setSupabase(client);
+    client.auth.getSession().then(({ data, error }) => {
+      if (error) setAuthMessage(error.message);
+      setSession(data?.session || null);
+      setAuthLoading(false);
+    });
+    const { data: listener } = client.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthLoading(false);
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  async function submitAuth(event, mode) {
+    event.preventDefault();
+    if (!supabase) return;
+    setAuthBusy(true);
+    setAuthMessage("");
+    const result = mode === "signup"
+      ? await supabase.auth.signUp({ email: email.trim(), password })
+      : await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    setAuthBusy(false);
+    if (result.error) setAuthMessage(result.error.message);
+    else if (mode === "signup" && !result.data.session) setAuthMessage("Account created. Check your email to confirm the address, then sign in.");
+    else setAuthMessage(mode === "signup" ? "Account created." : "");
+  }
+
+  async function signOut() {
+    if (supabase) await supabase.auth.signOut();
+    setSession(null);
+  }
+
+  if (authLoading) return <div className="auth-shell"><div className="auth-card"><div className="brand-mark"><Shirt size={21}/></div><h1>Opening Threadline…</h1></div></div>;
+  if (configError) return <div className="auth-shell"><div className="auth-card"><div className="brand-mark"><Shirt size={21}/></div><h1>Connect your cloud</h1><p>{configError}</p><p>For local development, create <code>.env.local</code>. In Cloudflare, add the same variables under your Worker/Pages build environment.</p></div></div>;
+  if (!session) return <div className="auth-shell"><div className="auth-card"><div className="brand-mark"><Shirt size={21}/></div><div className="brand-name">threadline<span>.</span></div><p className="auth-subtitle">Your tailor studio, securely synced.</p><h1>Welcome to your workspace</h1><form className="modal-form" onSubmit={e => submitAuth(e, "signin")}><Field label="Email address"><input type="email" required autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com"/></Field><Field label="Password"><input type="password" required minLength={6} autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} placeholder="At least 6 characters"/></Field><button className="btn primary auth-submit" disabled={authBusy}>{authBusy ? "Please wait…" : "Sign in"}</button></form><button className="text-button auth-create" disabled={authBusy} onClick={e => { e.preventDefault(); submitAuth({ preventDefault() {} }, "signup"); }}>Create a new account</button>{authMessage && <p className="auth-message" role="status">{authMessage}</p>}<p className="auth-footnote">Your customer records are private to your signed-in account.</p></div></div>;
+  return <Workspace key={session.user.id} user={session.user} supabase={supabase} onSignOut={signOut}/>;
+}
 
 export default App;
