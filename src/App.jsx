@@ -153,7 +153,7 @@ function App() {
       <footer className="footer"><span>© {new Date().getFullYear()} Threadline Studio</span><span><span className="online-dot"/> Saved in this browser · export backups regularly</span></footer>
     </main>
     {customerModal && <Modal title="Add new customer" subtitle="Create a profile to store measurements and orders." onClose={() => setCustomerModal(false)}><form onSubmit={addCustomer} className="modal-form"><Field label="Customer name *"><input autoFocus required placeholder="e.g. Rahul Verma" value={newCustomer.name} onChange={e => setNewCustomer({...newCustomer, name:e.target.value})}/></Field><Field label="Phone number *"><input required inputMode="tel" placeholder="e.g. 98765 43210" value={newCustomer.phone} onChange={e => setNewCustomer({...newCustomer, phone:e.target.value})}/></Field><div className="form-grid"><Field label="Height"><input placeholder="e.g. 5 ft 8 in" value={newCustomer.height} onChange={e => setNewCustomer({...newCustomer, height:e.target.value})}/></Field><Field label="Fit preference"><select value={newCustomer.fit} onChange={e => setNewCustomer({...newCustomer, fit:e.target.value})}><option>Regular</option><option>Slim</option><option>Relaxed</option><option>Tailored</option></select></Field></div><Field label="Notes"><textarea rows="3" placeholder="Posture, fitting preferences, alterations…" value={newCustomer.notes} onChange={e => setNewCustomer({...newCustomer, notes:e.target.value})}/></Field><div className="modal-actions"><button type="button" className="btn secondary" onClick={() => setCustomerModal(false)}>Cancel</button><button className="btn primary" type="submit"><Plus size={16}/> Create customer</button></div></form></Modal>}
-    {orderModal && <Modal title="Create garment order" subtitle="Add a new stitching job to the work queue." onClose={() => setOrderModal(false)}><form onSubmit={createOrder} className="modal-form"><Field label="Customer *"><select required value={newOrder.customerId} onChange={e => setNewOrder({...newOrder, customerId:e.target.value})}>{customers.map(c => <option key={c.id} value={c.id}>{c.name} · {c.id}</option>)}</select></Field><Field label="Garment / order description *"><input required placeholder="e.g. 2 shirts, 1 trouser" value={newOrder.garment} onChange={e => setNewOrder({...newOrder, garment:e.target.value})}/></Field><div className="form-grid"><Field label="Delivery date *"><input required type="date" value={newOrder.due} onChange={e => setNewOrder({...newOrder, due:e.target.value})}/></Field><Field label="Total price (₹) *"><input required type="number" min="0" value={newOrder.amount} onChange={e => setNewOrder({...newOrder, amount:e.target.value})} placeholder="0"/></Field></div><Field label="Advance paid (₹)"><input type="number" min="0" value={newOrder.paid} onChange={e => setNewOrder({...newOrder, paid:e.target.value})} placeholder="0"/></Field><Field label="Order notes"><textarea rows="2" value={newOrder.notes} onChange={e => setNewOrder({...newOrder, notes:e.target.value})} placeholder="Fabric, design, special instructions…"/></Field><div className="modal-actions"><button type="button" className="btn secondary" onClick={() => setOrderModal(false)}>Cancel</button><button className="btn primary" type="submit"><Plus size={16}/> Create order</button></div></form></Modal>}
+    {orderModal && <Modal title="Create garment order" subtitle="Add a new stitching job to the work queue." onClose={() => setOrderModal(false)}><form onSubmit={createOrder} className="modal-form"><CustomerSearchSelect customers={customers} value={newOrder.customerId} onChange={customerId => setNewOrder(prev => ({ ...prev, customerId }))} /><Field label="Garment / order description *"><input required placeholder="e.g. 2 shirts, 1 trouser" value={newOrder.garment} onChange={e => setNewOrder({...newOrder, garment:e.target.value})}/></Field><div className="form-grid"><Field label="Delivery date *"><input required type="date" value={newOrder.due} onChange={e => setNewOrder({...newOrder, due:e.target.value})}/></Field><Field label="Total price (₹) *"><input required type="number" min="0" value={newOrder.amount} onChange={e => setNewOrder({...newOrder, amount:e.target.value})} placeholder="0"/></Field></div><Field label="Advance paid (₹)"><input type="number" min="0" value={newOrder.paid} onChange={e => setNewOrder({...newOrder, paid:e.target.value})} placeholder="0"/></Field><Field label="Order notes"><textarea rows="2" value={newOrder.notes} onChange={e => setNewOrder({...newOrder, notes:e.target.value})} placeholder="Fabric, design, special instructions…"/></Field><div className="modal-actions"><button type="button" className="btn secondary" onClick={() => setOrderModal(false)}>Cancel</button><button className="btn primary" type="submit"><Plus size={16}/> Create order</button></div></form></Modal>}
     {toast && <div className="toast"><Check size={17}/>{toast}</div>}
   </div>;
 }
@@ -186,6 +186,62 @@ function Measurements({ customers, selectedCustomerId, setSelectedCustomerId, se
     <div className="measurement-layout"><section className="panel garment-panel"><div className="panel-heading"><div><h2>Choose garment</h2><p>Measurements are saved separately for each type.</p></div></div><div className="garment-list">{Object.keys(GARMENTS).map((g,i)=>{const saved=Object.keys(customer?.measurements?.[g]||{}).filter(k=>k!=="_unit").length;return <button key={g} className={`garment-option ${selectedGarment===g?"selected":""}`} onClick={()=>setSelectedGarment(g)}><span className={`garment-icon gi-${i}`}><Shirt size={18}/></span><span className="garment-option-copy"><strong>{g}</strong><small>{saved ? `${saved} fields saved` : "No measurements yet"}</small></span>{selectedGarment===g?<span className="selected-check"><Check size={13}/></span>:<ChevronRight size={16}/>}</button>})}</div><div className="measurement-note"><Ruler size={16}/><p><strong>Good to know</strong><br/>Record whether values are body measurements or taken from a finished garment.</p></div></section>
     <section className="panel measurement-form-panel"><div className="panel-heading measurement-form-heading"><div><h2>{selectedGarment} measurements</h2><p>Enter the values provided by your tailor.</p></div><div className="unit-toggle"><button className={unit==="in"?"on":""} onClick={()=>{ if(unit!=="in") { setMeasurements(prev=>Object.fromEntries(Object.entries(prev).map(([k,v])=>[k, v!=="" && Number.isFinite(Number(v)) ? String(Math.round(Number(v)/2.54*10)/10) : v]))); setUnit("in"); } }}>in</button><button className={unit==="cm"?"on":""} onClick={()=>{ if(unit!=="cm") { setMeasurements(prev=>Object.fromEntries(Object.entries(prev).map(([k,v])=>[k, v!=="" && Number.isFinite(Number(v)) ? String(Math.round(Number(v)*2.54*10)/10) : v]))); setUnit("cm"); } }}>cm</button></div></div><div className="measurement-context"><div><span className="context-dot"/><span>Customer: <strong>{customer?.name}</strong></span></div><span className="context-divider"/><span>Units: {unit==="in"?"Inches":"Centimetres"}</span></div><div className="measurement-fields">{GARMENTS[selectedGarment].map((field,i)=><div className="measurement-field" key={field}><label htmlFor={`measure-${i}`}>{field}<span className="measure-index">{String(i+1).padStart(2,"0")}</span></label><div className="measure-input-wrap"><input id={`measure-${i}`} type="number" min="0" step="0.1" placeholder="—" value={measurements[field]||""} onChange={e=>setMeasurements(prev=>({...prev,[field]:e.target.value}))}/><span>{unit}</span></div></div>)}</div><div className="measurement-form-footer"><span><Clock3 size={14}/> {Object.values(measurements).filter(v=>String(v).trim()).length} of {GARMENTS[selectedGarment].length} fields filled</span><button className="btn primary" onClick={onSave}><Check size={16}/> Save {selectedGarment.toLowerCase()} measurements</button></div><div className="body-measurement-warning"><CircleHelp size={16}/><span>Use your shop's standard measurement points and fitting allowance. This form stores the entered values; it does not automatically add ease or calculate finished garment dimensions.</span></div></section></div></>}
   </>;
+}
+
+function CustomerSearchSelect({ customers, value, onChange }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const selected = customers.find(customer => customer.id === value);
+  const matches = useMemo(() => {
+    const term = query.trim().toLowerCase();
+    const results = !term ? customers : customers.filter(customer =>
+      `${customer.name || ""} ${customer.phone || ""} ${customer.id || ""}`.toLowerCase().includes(term)
+    );
+    return results.slice(0, 8);
+  }, [customers, query]);
+
+  return <div className="form-field">
+    <span>Customer *</span>
+    {selected && !open ? (
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,border:"1px solid var(--border, #dce3dc)",borderRadius:10,padding:"10px 12px",background:"var(--surface, #fff)"}}>
+        <div style={{minWidth:0,display:"flex",flexDirection:"column",gap:3}}>
+          <strong>{selected.name}</strong>
+          <small style={{color:"var(--muted, #68736b)"}}>{selected.phone || "No phone"} · {selected.id}</small>
+        </div>
+        <button type="button" className="btn secondary small" onClick={() => { setQuery(""); setOpen(true); }}>Change</button>
+      </div>
+    ) : (
+      <div style={{position:"relative"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,border:"1px solid var(--border, #dce3dc)",borderRadius:10,padding:"0 12px",background:"var(--surface, #fff)"}}>
+          <Search size={17} style={{flexShrink:0,color:"var(--muted, #68736b)"}} />
+          <input
+            autoComplete="off"
+            aria-label="Search customers by name, phone or customer ID"
+            placeholder="Search name, phone or customer ID…"
+            value={query}
+            onFocus={() => setOpen(true)}
+            onChange={event => { setQuery(event.target.value); setOpen(true); }}
+            style={{border:0,outline:0,boxShadow:"none",width:"100%",minWidth:0,background:"transparent"}}
+          />
+          {query && <button type="button" aria-label="Clear customer search" className="clear-search" onClick={() => setQuery("")}><X size={14} /></button>}
+        </div>
+        {open && <div style={{position:"absolute",zIndex:30,top:"calc(100% + 6px)",left:0,right:0,maxHeight:260,overflowY:"auto",background:"var(--surface, #fff)",border:"1px solid var(--border, #dce3dc)",borderRadius:12,boxShadow:"0 12px 30px rgba(20,35,24,.14)"}}>
+          {matches.length ? matches.map(customer => <button
+            type="button"
+            key={customer.id}
+            onClick={() => { onChange(customer.id); setQuery(""); setOpen(false); }}
+            style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",border:0,borderBottom:"1px solid var(--border, #edf0ed)",background:"transparent",textAlign:"left",cursor:"pointer"}}
+          >
+            <span style={{width:34,height:34,flexShrink:0,borderRadius:"50%",display:"grid",placeItems:"center",background:"#e7efe7",color:"#31543b",fontSize:12,fontWeight:700}}>{(customer.name || "?").split(" ").map(part => part[0]).slice(0,2).join("").toUpperCase()}</span>
+            <span style={{minWidth:0,display:"flex",flexDirection:"column",gap:3}}><strong>{customer.name}</strong><small style={{color:"var(--muted, #68736b)"}}>{customer.phone || "No phone"} · {customer.id}</small></span>
+          </button>) : <div style={{padding:14,fontSize:13,color:"var(--muted, #68736b)"}}>No customers found. Try another name, phone number or ID.</div>}
+          {matches.length > 0 && <div style={{padding:"8px 12px",fontSize:11,color:"var(--muted, #68736b)"}}>{query.trim() ? `Showing up to ${matches.length} matches` : "Type to search across all customers"}</div>}
+        </div>}
+        {open && <button type="button" onClick={() => { setOpen(false); setQuery(""); }} style={{marginTop:6,border:0,background:"transparent",padding:"4px 0",fontSize:12,color:"var(--muted, #68736b)",cursor:"pointer"}}>Close search</button>}
+      </div>
+    )}
+    {!selected && <small style={{color:"var(--muted, #68736b)"}}>Search by customer name, phone number or ID.</small>}
+  </div>;
 }
 
 function Orders({ orders, onAdd, onStatus }) {
